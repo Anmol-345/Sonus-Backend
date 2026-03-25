@@ -37,8 +37,10 @@ const getCookieArgs = () => {
 };
 
 // yt-dlp binary: Prioritize local binary from build script, then fallback to env var or PATH
-const YTDLP_BIN = fs.existsSync(path.join(__dirname, 'yt-dlp')) 
-    ? path.join(__dirname, 'yt-dlp') 
+const isWin = process.platform === 'win32';
+const localBin = path.join(__dirname, isWin ? 'yt-dlp.exe' : 'yt-dlp');
+const YTDLP_BIN = fs.existsSync(localBin) 
+    ? localBin 
     : (process.env.YTDLP_PATH || 'yt-dlp');
 
 const COMMON_ARGS = [
