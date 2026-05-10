@@ -1,11 +1,9 @@
 const express = require('express');
 const cors = require('cors');
-const compression = require('compression');
 const { spawn } = require('child_process');
 require('dotenv').config();
 
 const app = express();
-app.use(compression());
 const PORT = process.env.PORT || 3000;
 
 // On Render, bind to 0.0.0.0 is handled via listen(PORT), but CORS
@@ -19,28 +17,6 @@ app.use(cors({
     methods: ['GET'],
 }));
 app.use(express.json());
-
-// In-memory URL cache: { videoId -> { url, expiresAt } }
-const urlCache = new Map();
-const CACHE_TTL_MS = 4 * 60 * 60 * 1000; // 4 hours
-
-// In-memory search cache: { queryKey -> { results, expiresAt } }
-const searchCache = new Map();
-const SEARCH_CACHE_TTL_MS = 10 * 60 * 1000; // 10 minutes
-
-// Periodic cleanup to prevent unbounded memory growth on long-running instances
-setInterval(() => {
-    const now = Date.now();
-    for (const [key, val] of urlCache.entries()) {
-        if (val.expiresAt <= now) urlCache.delete(key);
-    }
-    for (const [key, val] of searchCache.entries()) {
-        if (val.expiresAt <= now) searchCache.delete(key);
-    }
-}, 30 * 60 * 1000); // every 30 min
-
-// In-flight deduplication
-const inflight = new Map();
 
 const fs = require('fs');
 const path = require('path');
@@ -76,7 +52,7 @@ const COMMON_ARGS = [
 // Helper to run yt-dlp commands
 const runYtdlp = (args) => {
     return new Promise((resolve, reject) => {
-        const proc = spawn(YTDLP_BIN, [...COMMON_ARGS, ...getCookieArgs(), ...args], { maxBuffer: 10 * 1024 * 1024 });
+        const proc = spawn(YTDLP_BIN, [...COMMON_ARGS, ...getCookieArgs(), ...args]);
         let stdout = '';
         let stderr = '';
 
@@ -103,16 +79,7 @@ app.get('/api/search', async (req, res) => {
     const { q, limit = 20 } = req.query;
     if (!q) return res.status(400).json({ error: 'Query parameter "q" is required' });
 
-    const cacheKey = `${q}::${limit}`;
-
     try {
-        // Cache hit
-        const cached = searchCache.get(cacheKey);
-        if (cached && cached.expiresAt > Date.now()) {
-            console.log(`[search cache hit] ${cacheKey}`);
-            return res.json(cached.results);
-        }
-
         const safeLimit = Math.min(parseInt(limit) || 20, 50); // cap at 50
         const args = [
             `ytsearch${safeLimit}:${q}`,
@@ -135,7 +102,6 @@ app.get('/api/search', async (req, res) => {
             };
         }).filter(Boolean);
 
-        searchCache.set(cacheKey, { results, expiresAt: Date.now() + SEARCH_CACHE_TTL_MS });
         res.json(results);
     } catch (error) {
         console.error('Search error:', error);
@@ -170,6 +136,20 @@ app.get('/api/info/:videoId', async (req, res) => {
     }
 });
 
+// In-memory URL cache: { videoId -> { url, expiresAt } }
+const urlCache = new Map();
+const CACHE_TTL_MS = 4 * 60 * 60 * 1000; // 4 hours
+
+// Periodic cleanup to prevent unbounded memory growth on long-running instances
+setInterval(() => {
+    const now = Date.now();
+    for (const [key, val] of urlCache.entries()) {
+        if (val.expiresAt <= now) urlCache.delete(key);
+    }
+}, 30 * 60 * 1000); // every 30 min
+
+// In-flight deduplication
+const inflight = new Map();
 
 // API: Stream (Get Audio URL)
 app.get('/api/stream/:videoId', async (req, res) => {
